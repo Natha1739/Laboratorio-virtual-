@@ -14,7 +14,7 @@ import pandas as pd
 import streamlit as st
 
 # ==============================================================================
-# 1. CONFIGURACIÓN DE PÁGINA Y ESTILOS DE STREAMLIT
+# 1. CONFIGURACIÓN DE PÁGINA Y ESTILOS DE ALTO CONTRASTE
 # ==============================================================================
 st.set_page_config(
     page_title="Laboratorio Virtual DLVO & Cinética Coloidal",
@@ -23,11 +23,34 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+# Estilos CSS corregidos para garantizar legibilidad en modo claro y oscuro
 st.markdown(
     """
     <style>
-    .main { background-color: #f8f9fa; }
-    .stMetric { background-color: #ffffff; padding: 14px; border-radius: 8px; border: 1px solid #e2e8f0; }
+    .main { background-color: #f8fafc; }
+    
+    /* Forzar contraste alto en tarjetas de métricas */
+    div[data-testid="stMetric"] {
+        background-color: #ffffff !important;
+        padding: 16px !important;
+        border-radius: 10px !important;
+        border: 1px solid #cbd5e1 !important;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.05) !important;
+    }
+    
+    /* Color de título de métrica */
+    div[data-testid="stMetric"] label {
+        color: #475569 !important;
+        font-weight: 600 !important;
+        font-size: 0.9rem !important;
+    }
+    
+    /* Color de valor numérico de métrica */
+    div[data-testid="stMetric"] div[data-testid="stMetricValue"] {
+        color: #0f172a !important;
+        font-weight: 700 !important;
+        font-size: 1.6rem !important;
+    }
     </style>
 """,
     unsafe_allow_html=True,
@@ -62,15 +85,13 @@ NANOMATERIALES = {
 def integracion_trapecio(y: np.ndarray, x: np.ndarray) -> float:
     """Calcula la integral definida mediante la regla del trapecio vectorizada.
 
-    Es compatible de forma agnóstica con NumPy 1.x, NumPy 2.x y ejecuciones
-    puras sin depender de funciones deprecadas como np.trapz.
+    Compatible de forma agnóstica con NumPy 1.x, NumPy 2.x y ejecuciones puras.
     """
     if hasattr(np, "trapezoid"):
         return float(np.trapezoid(y, x))
     elif hasattr(np, "trapz"):
         return float(np.trapz(y, x))
     else:
-        # Implementación matemática alternativa de la regla del trapecio vectorizada
         return float(np.sum(0.5 * (y[1:] + y[:-1]) * np.diff(x)))
 
 
@@ -87,7 +108,7 @@ def calcular_curva_dlvo(
     radio_m = radio_nm * 1e-9
     kb_t = 4.11e-21  # k_B * T a 298 K (Joules)
 
-    # Distancia centro a centro r = 2*r_p + h (donde h es la separación de superficie)
+    # Distancia centro a centro r = 2*r_p + h
     h_nm = np.linspace(0.2, 20.0, 500)
     h_m = h_nm * 1e-9
     r_m = 2.0 * radio_m + h_m
@@ -139,7 +160,6 @@ def calcular_curva_dlvo(
     min_secundario = float(np.min(sub_sec)) if len(sub_sec) > 0 else 0.0
 
     # INTEGRACIÓN NUMÉRICA DE FUCHS (Factor de Estabilidad W)
-    # W = 2 * r_p * integral_2rp^inf ( exp(V/kbT) / r^2 ) dr
     integrando = np.exp(np.clip(v_total_kbt, -20, 100)) / (r_m**2)
     fuchs_integral = integracion_trapecio(integrando, r_m)
     fuchs_w = 2.0 * radio_m * fuchs_integral
@@ -180,7 +200,7 @@ def generar_matriz_sensibilidad(
 
 
 # ==============================================================================
-# 4. GESTIÓN DEL ESTADO DE LA SESIÓN (SESSION STATE)
+# 4. GESTIÓN DEL ESTADO DE LA SESIÓN
 # ==============================================================================
 if "ronda" not in st.session_state:
     st.session_state.ronda = 1
@@ -198,7 +218,7 @@ if "ultrasonido" not in st.session_state:
 # ==============================================================================
 # 5. PANEL DE CONTROL LATERAL
 # ==============================================================================
-st.sidebar.header("🎛️️ PARÁMETROS DEL EXPERIMENTO")
+st.sidebar.header("🎛️ PARÁMETROS DEL EXPERIMENTO")
 
 material_sel = st.sidebar.selectbox(
     "Nanomaterial", list(NANOMATERIALES.keys())
@@ -292,14 +312,18 @@ with tab_lab:
 
         st.subheader("Resultados Cuantitativos")
         c1, c2, c3, c4 = st.columns(4)
+
+        # Formateo dinámico de tiempo
+        if d["tiempo_horas"] < 1.0:
+            tiempo_str = f"{d['tiempo_horas'] * 60:.1f} min"
+        elif d["tiempo_horas"] < 72.0:
+            tiempo_str = f"{d['tiempo_horas']:.1f} hrs"
+        else:
+            tiempo_str = "> 3 meses"
+
         c1.metric("Barrera DLVO", f"{d['barrera']:.1f} kBT")
         c2.metric("Factor de Fuchs (Log10 W)", f"{np.log10(max(d['fuchs_w'], 1.0)):.2f}")
-        c3.metric(
-            "Tiempo de Vida Estimado",
-            f"{d['tiempo_horas']:.1f} hrs"
-            if d["tiempo_horas"] < 72
-            else "> 3 meses",
-        )
+        c3.metric("Tiempo de Vida Estimado", tiempo_str)
         c4.metric("Longitud Debye", f"{d['debye_nm']:.2f} nm")
 
         col_g1, col_g2 = st.columns([1.2, 1.0])
@@ -514,7 +538,7 @@ with tab_guia:
     
     $$W = 2a \\int_{2a}^{\\infty} \\frac{\\exp\\left(\\frac{V_{\\text{total}}(r)}{k_B T}\\right)}{r^2} dr$$
     
-    * **Si $W \\approx 1$ ($|\\log W| \\to 0$):** Coagulación rápida controlada por difusión (sin barrera repulsiva).
+    * **Si $W \\approx 1$ ($|\\log W| \\to 0$):** Coagulación rápida controlada por difusión.
     * **Si $W \\gg 10^5$ ($\\log W > 5$):** Suspensión altamente estable a largo plazo.
     """
     )
