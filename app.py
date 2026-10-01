@@ -7,7 +7,6 @@ Autor: Colega de Programación e IA
 Licencia: MIT
 """
 
-import io
 import random
 import matplotlib.pyplot as plt
 import numpy as np
@@ -15,7 +14,7 @@ import pandas as pd
 import streamlit as st
 
 # ==============================================================================
-# 1. CONFIGURACIÓN DE PÁGINA Y ESTILOS
+# 1. CONFIGURACIÓN DE PÁGINA Y ESTILOS DE STREAMLIT
 # ==============================================================================
 st.set_page_config(
     page_title="Laboratorio Virtual DLVO & Cinética Coloidal",
@@ -35,7 +34,7 @@ st.markdown(
 )
 
 # ==============================================================================
-# 2. BASE DE DATOS FÍSICA
+# 2. BASE DE DATOS FÍSICA DE NANOMATERIALES
 # ==============================================================================
 NANOMATERIALES = {
     "Dióxido de Silicio (SiO2)": {
@@ -58,8 +57,23 @@ NANOMATERIALES = {
 
 
 # ==============================================================================
-# 3. MOTOR FÍSICO-MATEMÁTICO: DLVO & INTEGRACIÓN DE FUCHS
+# 3. FUNCIONES AUXILIARES DE CÁLCULO NUMÉRICO Y FÍSICA
 # ==============================================================================
+def integracion_trapecio(y: np.ndarray, x: np.ndarray) -> float:
+    """Calcula la integral definida mediante la regla del trapecio vectorizada.
+
+    Es compatible de forma agnóstica con NumPy 1.x, NumPy 2.x y ejecuciones
+    puras sin depender de funciones deprecadas como np.trapz.
+    """
+    if hasattr(np, "trapezoid"):
+        return float(np.trapezoid(y, x))
+    elif hasattr(np, "trapz"):
+        return float(np.trapz(y, x))
+    else:
+        # Implementación matemática alternativa de la regla del trapecio vectorizada
+        return float(np.sum(0.5 * (y[1:] + y[:-1]) * np.diff(x)))
+
+
 def calcular_curva_dlvo(
     zeta_mv: float,
     conc_elec_mm: float,
@@ -111,7 +125,7 @@ def calcular_curva_dlvo(
             0.0,
         )
 
-    # Energía Total
+    # Energía Total DLVO
     v_total_kbt = v_vdw_kbt + v_elec_kbt + v_esterica_kbt
 
     # Barrera y Mínimos
@@ -127,11 +141,10 @@ def calcular_curva_dlvo(
     # INTEGRACIÓN NUMÉRICA DE FUCHS (Factor de Estabilidad W)
     # W = 2 * r_p * integral_2rp^inf ( exp(V/kbT) / r^2 ) dr
     integrando = np.exp(np.clip(v_total_kbt, -20, 100)) / (r_m**2)
-    fuchs_integral = np.trapz(integrando, r_m)
+    fuchs_integral = integracion_trapecio(integrando, r_m)
     fuchs_w = 2.0 * radio_m * fuchs_integral
 
-    # Tiempo estimado de agregación rápida k_fast ~ 1e-17 m^3/s
-    # Tiempo de vida ~ W / (k_fast * N_0)
+    # Tiempo estimado de agregación
     tiempo_horas = (fuchs_w * 0.05) / 3600.0
 
     return {
@@ -149,6 +162,7 @@ def calcular_curva_dlvo(
     }
 
 
+@st.cache_data
 def generar_matriz_sensibilidad(
     material: str, ph: float, mecanismo: str
 ) -> tuple:
@@ -166,7 +180,7 @@ def generar_matriz_sensibilidad(
 
 
 # ==============================================================================
-# 4. GESTIÓN DEL ESTADO
+# 4. GESTIÓN DEL ESTADO DE LA SESIÓN (SESSION STATE)
 # ==============================================================================
 if "ronda" not in st.session_state:
     st.session_state.ronda = 1
@@ -182,9 +196,9 @@ if "ultrasonido" not in st.session_state:
     st.session_state.ultrasonido = False
 
 # ==============================================================================
-# 5. PANEL DE CONTROL
+# 5. PANEL DE CONTROL LATERAL
 # ==============================================================================
-st.sidebar.header("🎛️ PARÁMETROS DEL EXPERIMENTO")
+st.sidebar.header("🎛️️ PARÁMETROS DEL EXPERIMENTO")
 
 material_sel = st.sidebar.selectbox(
     "Nanomaterial", list(NANOMATERIALES.keys())
