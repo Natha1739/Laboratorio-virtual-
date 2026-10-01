@@ -1,9 +1,13 @@
-"""Laboratorio Virtual de Nanomateriales - Teoría DLVO.
+"""Laboratorio Virtual Avanzado de Nanomateriales - Teoría DLVO y Cinética.
 
-Aplicación interactiva construida en Python puro con Streamlit, NumPy,
-Matplotlib y Pandas para la simulación física de estabilidad coloidal.
+Simulador de estabilidad coloidal con integración numérica del factor
+de estabilidad de Fuchs (W), análisis de sensibilidad 2D y bitácora.
+
+Autor: Colega de Programación e IA
+Licencia: MIT
 """
 
+import io
 import random
 import matplotlib.pyplot as plt
 import numpy as np
@@ -14,7 +18,7 @@ import streamlit as st
 # 1. CONFIGURACIÓN DE PÁGINA Y ESTILOS
 # ==============================================================================
 st.set_page_config(
-    page_title="Laboratorio Virtual de Teoría DLVO",
+    page_title="Laboratorio Virtual DLVO & Cinética Coloidal",
     page_icon="🧪",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -24,139 +28,145 @@ st.markdown(
     """
     <style>
     .main { background-color: #f8f9fa; }
-    .stMetric { background-color: #ffffff; padding: 12px; border-radius: 8px; border: 1px solid #e2e8f0; }
+    .stMetric { background-color: #ffffff; padding: 14px; border-radius: 8px; border: 1px solid #e2e8f0; }
     </style>
 """,
     unsafe_allow_html=True,
 )
 
 # ==============================================================================
-# 2. BASE DE DATOS FÍSICA DE NANOMATERIALES
+# 2. BASE DE DATOS FÍSICA
 # ==============================================================================
 NANOMATERIALES = {
     "Dióxido de Silicio (SiO2)": {
         "A132": 0.85e-20,
-        "descripcion": "Atracción vdW muy baja. Alta estabilidad natural en agua.",
+        "descripcion": "Baja constante de Hamaker. Altamente estable en agua.",
     },
     "Dióxido de Titanio (TiO2)": {
         "A132": 6.0e-20,
-        "descripcion": "Atracción vdW elevada. Propenso a la coagulación rápida.",
+        "descripcion": "Atracción vdW moderada-alta. Sensible a electrolitos.",
     },
     "Nanopartículas de Oro (Au)": {
         "A132": 25.0e-20,
-        "descripcion": "Fuerzas de van der Waals extremadamente altas.",
+        "descripcion": "Atracción vdW muy elevada. Requiere estabilización estérica.",
     },
     "Óxido de Hierro (Fe3O4)": {
         "A132": 3.3e-20,
-        "descripcion": "Atracción vdW moderada-alta en medio acuoso.",
+        "descripcion": "Comportamiento magnético y atracción vdW intermedia.",
     },
 }
 
 
 # ==============================================================================
-# 3. MOTOR DE CÁLCULO FÍSICO-MATEMÁTICO (DLVO)
+# 3. MOTOR FÍSICO-MATEMÁTICO: DLVO & INTEGRACIÓN DE FUCHS
 # ==============================================================================
-def calcular_interacciones_dlvo(
+def calcular_curva_dlvo(
     zeta_mv: float,
     conc_elec_mm: float,
     ph: float,
     material_nombre: str,
     mecanismo: str,
 ) -> dict:
-    """Calcula las curvas de energía de atracción de van der Waals, repulsión
-
-    electrostática e impedimento estérico según el modelo DLVO.
-    """
+    """Calcula el perfil de energía DLVO y el Factor de Estabilidad de Fuchs W."""
     A132 = NANOMATERIALES[material_nombre]["A132"]
-    radio_p = 20.0  # Radio de la partícula en nm
-    distancia = np.linspace(0.3, 15.0, 350)  # Distancia interpartícula en nm
-    kb_t = 4.11e-21  # Energía térmica k_B * T en Joules
+    radio_nm = 20.0  # Radio de partícula r_p = 20 nm
+    radio_m = radio_nm * 1e-9
+    kb_t = 4.11e-21  # k_B * T a 298 K (Joules)
 
-    # 1. Atracción de Van der Waals (V_vdW)
-    v_vdw_j = -(A132 * (radio_p * 1e-9)) / (12.0 * (distancia * 1e-9))
+    # Distancia centro a centro r = 2*r_p + h (donde h es la separación de superficie)
+    h_nm = np.linspace(0.2, 20.0, 500)
+    h_m = h_nm * 1e-9
+    r_m = 2.0 * radio_m + h_m
+
+    # 1. Energía Atractiva (Van der Waals)
+    v_vdw_j = -(A132 * radio_m) / (12.0 * h_m)
     v_vdw_kbt = v_vdw_j / kb_t
 
-    # 2. Longitud de Debye (compresión de doble capa por fuerza iónica)
-    kappa = np.sqrt(conc_elec_mm) * 0.33
+    # 2. Longitud de Debye y Repulsión Electrostática
+    kappa = np.sqrt(conc_elec_mm) * 0.33  # nm^-1
     debye_nm = 1.0 / (kappa + 1e-6)
 
     factor_ph = np.clip((ph - 6.5) / 3.5, -1.0, 1.0)
     zeta_efectivo = zeta_mv * (1.0 + 0.05 * factor_ph)
-
-    # 3. Repulsión Electrostática (V_elec)
-    permitividad = 78.5 * 8.854e-12
     zeta_v = zeta_efectivo / 1000.0
+
+    permitividad = 78.5 * 8.854e-12
     v_elec_j = (
         2.0
         * np.pi
         * permitividad
-        * (radio_p * 1e-9)
+        * radio_m
         * (zeta_v**2)
-        * np.exp(-kappa * distancia)
+        * np.exp(-kappa * h_nm)
     )
     v_elec_kbt = v_elec_j / kb_t
 
-    # 4. Repulsión Estérica (Mecanismo adicional No-DLVO)
-    v_esterica_kbt = np.zeros_like(distancia)
+    # 3. Impedimento Estérico (No-DLVO)
+    v_esterica_kbt = np.zeros_like(h_nm)
     if mecanismo in ["Estérica", "Electroestérica"]:
         grosor_polimero = 3.0  # nm
         v_esterica_kbt = np.where(
-            distancia < grosor_polimero,
-            75.0 * ((grosor_polimero - distancia) / grosor_polimero) ** 2,
+            h_nm < grosor_polimero,
+            80.0 * ((grosor_polimero - h_nm) / grosor_polimero) ** 2,
             0.0,
         )
 
-    # Energía Total DLVO
+    # Energía Total
     v_total_kbt = v_vdw_kbt + v_elec_kbt + v_esterica_kbt
 
-    # Análisis de barrera y mínimos de energía
-    filtro_dist = distancia > 0.6
-    d_eval = distancia[filtro_dist]
-    v_eval = v_total_kbt[filtro_dist]
-
-    barrera = float(np.max(v_eval)) if np.max(v_eval) > 0 else 0.0
-    min_primario = float(np.min(v_eval[d_eval < 1.8]))
-
-    sub_secundario = v_eval[(d_eval >= 2.0) & (d_eval <= 7.0)]
-    min_secundario = (
-        float(np.min(sub_secundario)) if len(sub_secundario) > 0 else 0.0
+    # Barrera y Mínimos
+    barrera = (
+        float(np.max(v_total_kbt[h_nm > 0.5]))
+        if np.max(v_total_kbt[h_nm > 0.5]) > 0
+        else 0.0
     )
 
+    sub_sec = v_total_kbt[(h_nm >= 2.0) & (h_nm <= 8.0)]
+    min_secundario = float(np.min(sub_sec)) if len(sub_sec) > 0 else 0.0
+
+    # INTEGRACIÓN NUMÉRICA DE FUCHS (Factor de Estabilidad W)
+    # W = 2 * r_p * integral_2rp^inf ( exp(V/kbT) / r^2 ) dr
+    integrando = np.exp(np.clip(v_total_kbt, -20, 100)) / (r_m**2)
+    fuchs_integral = np.trapz(integrando, r_m)
+    fuchs_w = 2.0 * radio_m * fuchs_integral
+
+    # Tiempo estimado de agregación rápida k_fast ~ 1e-17 m^3/s
+    # Tiempo de vida ~ W / (k_fast * N_0)
+    tiempo_horas = (fuchs_w * 0.05) / 3600.0
+
     return {
-        "distancia": distancia,
+        "h_nm": h_nm,
         "v_vdw": v_vdw_kbt,
         "v_elec": v_elec_kbt,
         "v_esterica": v_esterica_kbt,
         "v_total": v_total_kbt,
         "barrera": barrera,
-        "min_primario": min_primario,
         "min_secundario": min_secundario,
         "debye_nm": debye_nm,
         "zeta_efectivo": zeta_efectivo,
+        "fuchs_w": fuchs_w,
+        "tiempo_horas": tiempo_horas,
     }
 
 
-def calcular_indice_estabilidad(
-    barrera: float,
-    zeta: float,
-    conc_elec: float,
-    mecanismo: str,
-    ruido: float,
-) -> float:
-    """Calcula un índice numérico de estabilidad coloidal (0 a 100)."""
-    score_barrera = np.clip(barrera * 2.5, 0, 50)
-    score_zeta = np.clip(abs(zeta) * 0.4, 0, 25)
-    score_elec = np.clip(25.0 - (conc_elec * 0.22), 0, 25)
+def generar_matriz_sensibilidad(
+    material: str, ph: float, mecanismo: str
+) -> tuple:
+    """Genera una matriz 2D de la barrera DLVO variando Zeta y Electrolito."""
+    zetas = np.linspace(-60, 60, 30)
+    elecs = np.linspace(0.1, 80, 30)
+    Z_barrera = np.zeros((len(elecs), len(zetas)))
 
-    base = score_barrera + score_zeta + score_elec
-    if mecanismo in ["Estérica", "Electroestérica"]:
-        base = max(base, 82.0)
+    for i, e in enumerate(elecs):
+        for j, z in enumerate(zetas):
+            res = calcular_curva_dlvo(z, e, ph, material, mecanismo)
+            Z_barrera[i, j] = res["barrera"]
 
-    return float(np.clip(base * ruido, 0, 100))
+    return zetas, elecs, Z_barrera
 
 
 # ==============================================================================
-# 4. ESTADO DE LA SESIÓN (SESSION STATE)
+# 4. GESTIÓN DEL ESTADO
 # ==============================================================================
 if "ronda" not in st.session_state:
     st.session_state.ronda = 1
@@ -168,410 +178,329 @@ if "ultimo_exp" not in st.session_state:
     st.session_state.ultimo_exp = None
 if "puntaje_acumulado" not in st.session_state:
     st.session_state.puntaje_acumulado = 0
-if "ultrasonido_aplicado" not in st.session_state:
-    st.session_state.ultrasonido_aplicado = False
+if "ultrasonido" not in st.session_state:
+    st.session_state.ultrasonido = False
 
 # ==============================================================================
-# 5. PANEL DE CONTROL LATERAL
+# 5. PANEL DE CONTROL
 # ==============================================================================
-st.sidebar.header("🎛️ CONTROL DE LA SUSPENSIÓN")
+st.sidebar.header("🎛️ PARÁMETROS DEL EXPERIMENTO")
 
 material_sel = st.sidebar.selectbox(
-    "Nanomaterial (Constante de Hamaker)", list(NANOMATERIALES.keys())
+    "Nanomaterial", list(NANOMATERIALES.keys())
 )
-st.sidebar.caption(
-    f"ℹ️️ {NANOMATERIALES[material_sel]['descripcion']} (A132 = {NANOMATERIALES[material_sel]['A132']:.1e} J)"
-)
+st.sidebar.caption(f"ℹ️ {NANOMATERIALES[material_sel]['descripcion']}")
 
 zeta_sel = st.sidebar.slider(
-    "Potencial Zeta (mV)", -60.0, 60.0, -25.0, step=1.0
+    "Potencial Zeta (mV)", -60.0, 60.0, -30.0, step=1.0
 )
 elec_sel = st.sidebar.slider(
-    "Concentración Electrolito (mM)", 0.1, 100.0, 5.0, step=0.5
+    "Electrolito NaCl (mM)", 0.1, 100.0, 10.0, step=0.5
 )
-ph_sel = st.sidebar.slider("pH del Medio", 3.0, 12.0, 7.0, step=0.1)
-conc_part_sel = st.sidebar.slider(
-    "Concentración Partículas (mg/mL)", 0.01, 10.0, 1.0, step=0.1
-)
+ph_sel = st.sidebar.slider("pH de la Solución", 3.0, 12.0, 7.0, step=0.1)
 mecanismo_sel = st.sidebar.radio(
     "Mecanismo de Estabilización",
     ["Electrostática", "Estérica", "Electroestérica"],
 )
 
-# Validación de máximo 2 modificaciones por ronda
-vars_actuales = {
+vars_act = {
     "material": material_sel,
     "zeta": zeta_sel,
     "elec": elec_sel,
     "ph": ph_sel,
-    "conc_part": conc_part_sel,
     "mecanismo": mecanismo_sel,
 }
 
 modificaciones = 0
 if st.session_state.vars_previas:
-    for k in vars_actuales:
-        if vars_actuales[k] != st.session_state.vars_previas.get(k):
+    for k in vars_act:
+        if vars_act[k] != st.session_state.vars_previas.get(k):
             modificaciones += 1
 
 st.sidebar.markdown("---")
-st.sidebar.write(f"**Ronda Experimental:** {st.session_state.ronda} / 6")
-st.sidebar.write(
-    f"**Variables modificadas en la ronda:** {modificaciones} / 2"
-)
+st.sidebar.write(f"**Ronda:** {st.session_state.ronda} / 6")
+st.sidebar.write(f"**Cambios en ronda:** {modificaciones} / 2")
 
-deshabilitar_ejecucion = False
-if modificaciones > 2:
-    st.sidebar.error(
-        "⚠️ **Límite experimental excedido.** Solo puedes modificar hasta 2 variables por ronda."
-    )
-    deshabilitar_ejecucion = True
+bloqueado = modificaciones > 2
+if bloqueado:
+    st.sidebar.error("⚠️ Máximo 2 cambios de variables por ronda.")
 
-# ==============================================================================
-# 6. EJECUCIÓN EXPERIMENTAL
-# ==============================================================================
 btn_ejecutar = st.sidebar.button(
-    "🚀 EJECUTAR EXPERIMENTO",
-    disabled=deshabilitar_ejecucion or (st.session_state.ronda > 6),
+    "🚀 EJECUTAR SIMULACIÓN",
+    disabled=bloqueado or (st.session_state.ronda > 6),
 )
 
 if btn_ejecutar:
-    st.session_state.ultrasonido_aplicado = False
-    ruido_exp = random.uniform(0.95, 1.05)
-
-    dlvo_res = calcular_interacciones_dlvo(
+    st.session_state.ultrasonido = False
+    ruido = random.uniform(0.97, 1.03)
+    res_dlvo = calcular_curva_dlvo(
         zeta_sel, elec_sel, ph_sel, material_sel, mecanismo_sel
     )
-    indice_est = calcular_indice_estabilidad(
-        dlvo_res["barrera"],
-        dlvo_res["zeta_efectivo"],
-        elec_sel,
-        mecanismo_sel,
-        ruido_exp,
-    )
 
-    if indice_est < 25:
-        estado_coloidal = "Coagulación Fuerte (Mínimo Primario)"
-        tam_agregados = "Grande (10 - 50 µm)"
-    elif indice_est < 60:
-        estado_coloidal = "Floculación Reversible (Mínimo Secundario)"
-        tam_agregados = "Moderado (2 - 10 µm)"
+    if res_dlvo["barrera"] > 15 or mecanismo_sel != "Electrostática":
+        estado = "Suspensión Altamente Estable"
+    elif res_dlvo["min_secundario"] < -1.5:
+        estado = "Floculación Reversible (Mín. Secundario)"
     else:
-        estado_coloidal = "Suspensión Estable / Redispersa"
-        tam_agregados = "Nanométrico (< 200 nm)"
-
-    pct_disp = float(
-        np.clip(
-            (
-                indice_est * 0.88
-                + (12.0 if mecanismo_sel != "Electrostática" else 0.0)
-            )
-            * ruido_exp,
-            4,
-            98,
-        )
-    )
+        estado = "Coagulación Rápida (Mín. Primario)"
 
     st.session_state.ultimo_exp = {
-        "dlvo": dlvo_res,
-        "indice": indice_est,
-        "pct_dispersas": pct_disp,
-        "estado": estado_coloidal,
-        "tam_agregados": tam_agregados,
+        "dlvo": res_dlvo,
+        "estado": estado,
         "material": material_sel,
+        "ruido": ruido,
     }
-    st.session_state.vars_previas = vars_actuales.copy()
+    st.session_state.vars_previas = vars_act.copy()
 
 # ==============================================================================
-# 7. INTERFAZ PRINCIPAL
+# 6. INTERFAZ Y PESTAÑAS
 # ==============================================================================
-st.title("🧪 Laboratorio Virtual de Estabilización Coloidal")
+st.title("🧪 Laboratorio Virtual de Estabilidad Coloidal")
 st.caption(
-    "Simulador científico universitario basado en la Teoría DLVO y Mecanismos de Estabilización."
+    "Simulador físico-químico interactivo con cinéticas de Fuchs y mapas de estabilidad 2D."
 )
 
-tab_lab, tab_bitacora, tab_eval, tab_guia = st.tabs(
+tab_lab, tab_sens, tab_bitacora, tab_guia = st.tabs(
     [
-        "📊 Laboratorio Virtual",
-        "📝 Bitácora & Reportes",
-        "🎯 Desafío Final",
-        "📚 Manual Teórico",
+        "📊 Experimento & Cinética",
+        "🗺️ Mapa de Estabilidad 2D",
+        "📝 Bitácora & Reporte",
+        "📚 Manual Físico",
     ]
 )
 
 with tab_lab:
     if st.session_state.ultimo_exp is None:
-        st.info(
-            "👉 Ajusta los parámetros en el panel izquierdo y presiona **EJECUTAR EXPERIMENTO**."
-        )
+        st.info("👈 Configura los parámetros y presiona **EJECUTAR SIMULACIÓN**.")
     else:
         exp = st.session_state.ultimo_exp
-        data = exp["dlvo"]
+        d = exp["dlvo"]
 
-        st.subheader("Resultados Fisicoquímicos")
-        col_m1, col_m2, col_m3, col_m4 = st.columns(4)
-        col_m1.metric("Índice de Estabilidad", f"{exp['indice']:.1f} / 100")
-        col_m2.metric(
-            "Potencial Zeta Efectivo", f"{data['zeta_efectivo']:.1f} mV"
+        st.subheader("Resultados Cuantitativos")
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Barrera DLVO", f"{d['barrera']:.1f} kBT")
+        c2.metric("Factor de Fuchs (Log10 W)", f"{np.log10(max(d['fuchs_w'], 1.0)):.2f}")
+        c3.metric(
+            "Tiempo de Vida Estimado",
+            f"{d['tiempo_horas']:.1f} hrs"
+            if d["tiempo_horas"] < 72
+            else "> 3 meses",
         )
-        col_m3.metric("Barrera de Energía", f"{data['barrera']:.1f} kBT")
-        col_m4.metric("Partículas Dispersas", f"{exp['pct_dispersas']:.1f} %")
+        c4.metric("Longitud Debye", f"{d['debye_nm']:.2f} nm")
 
-        col_c1, col_c2 = st.columns([1.2, 1.0])
+        col_g1, col_g2 = st.columns([1.2, 1.0])
 
-        with col_c1:
-            st.markdown("### Curva DLVO de Energía de Interacción")
-            fig, ax = plt.subplots(figsize=(6, 4.2))
+        with col_g1:
+            st.markdown("### Perfil de Energía de Interacción DLVO")
+            fig, ax = plt.subplots(figsize=(6, 4))
             ax.plot(
-                data["distancia"],
-                data["v_vdw"],
+                d["h_nm"],
+                d["v_vdw"],
                 "--",
                 color="#e74c3c",
                 label="Atracción vdW",
-                alpha=0.8,
+                alpha=0.7,
             )
             ax.plot(
-                data["distancia"],
-                data["v_elec"],
+                d["h_nm"],
+                d["v_elec"],
                 "--",
                 color="#3498db",
                 label="Repulsión Electrostática",
-                alpha=0.8,
+                alpha=0.7,
             )
             if mecanismo_sel in ["Estérica", "Electroestérica"]:
                 ax.plot(
-                    data["distancia"],
-                    data["v_esterica"],
+                    d["h_nm"],
+                    d["v_esterica"],
                     "--",
                     color="#8e44ad",
                     label="Repulsión Estérica",
-                    alpha=0.8,
+                    alpha=0.7,
                 )
 
             ax.plot(
-                data["distancia"],
-                data["v_total"],
+                d["h_nm"],
+                d["v_total"],
                 "-",
                 color="#2c3e50",
                 linewidth=2.5,
-                label="Energía Total",
+                label="Energía Total DLVO",
             )
-            ax.axhline(0, color="gray", linestyle=":", linewidth=0.8)
+            ax.axhline(0, color="black", linestyle=":", linewidth=0.8)
 
-            ax.set_xlim(0.3, 12)
-            ax.set_ylim(-20, max(45, data["barrera"] + 10))
-            ax.set_xlabel("Distancia entre partículas d (nm)")
-            ax.set_ylabel("Energía de Interacción Total (kBT)")
+            ax.set_xlim(0.2, 15)
+            ax.set_ylim(-15, max(40, d["barrera"] + 10))
+            ax.set_xlabel("Separación de superficie h (nm)")
+            ax.set_ylabel("Energía de Interacción (kBT)")
             ax.legend(fontsize=8)
-            ax.grid(True, linestyle="--", alpha=0.4)
+            ax.grid(True, linestyle="--", alpha=0.3)
             st.pyplot(fig)
 
-        with col_c2:
-            st.markdown("### Estado Visual y Reversibilidad")
-            fig_sim, ax_sim = plt.subplots(figsize=(5, 3.8))
-            ax_sim.set_facecolor("#f1f5f9")
+        with col_g2:
+            st.markdown("### Dispersión y Reversibilidad")
+            fig_sim, ax_sim = plt.subplots(figsize=(5, 3.6))
+            ax_sim.set_facecolor("#f8fafc")
 
-            np.random.seed(10)
-            n_p = 25
+            np.random.seed(42)
+            n_p = 20
 
-            if st.session_state.ultrasonido_aplicado and (
-                exp["indice"] >= 25 or data["min_secundario"] < 0
+            if st.session_state.ultrasonido and (
+                d["barrera"] > 5 or d["min_secundario"] < 0
             ):
                 x_p = np.random.uniform(1, 9, n_p)
                 y_p = np.random.uniform(1, 9, n_p)
-                c_p = "#3498db"
-                estado_vis = "Redispersión Temporal por Ultrasonido"
-            elif exp["indice"] > 60:
+                color_p = "#3498db"
+                tit = "Redispersión por Ultrasonido"
+            elif exp["estado"] == "Suspensión Altamente Estable":
                 x_p = np.random.uniform(1, 9, n_p)
                 y_p = np.random.uniform(1, 9, n_p)
-                c_p = "#2ecc71"
-                estado_vis = exp["estado"]
-            elif exp["indice"] > 25:
+                color_p = "#2ecc71"
+                tit = exp["estado"]
+            elif exp["estado"] == "Floculación Reversible (Mín. Secundario)":
                 x_p = np.concatenate(
                     [
-                        np.random.normal(3, 0.5, 12),
-                        np.random.normal(7, 0.5, 13),
+                        np.random.normal(3, 0.6, 10),
+                        np.random.normal(7, 0.6, 10),
                     ]
                 )
                 y_p = np.concatenate(
                     [
-                        np.random.normal(3, 0.5, 12),
-                        np.random.normal(7, 0.5, 13),
+                        np.random.normal(3, 0.6, 10),
+                        np.random.normal(7, 0.6, 10),
                     ]
                 )
-                c_p = "#f39c12"
-                estado_vis = exp["estado"]
+                color_p = "#f39c12"
+                tit = exp["estado"]
             else:
-                x_p = np.random.normal(5, 0.35, n_p)
-                y_p = np.random.normal(5, 0.35, n_p)
-                c_p = "#e74c3c"
-                estado_vis = exp["estado"]
-
-            debye_r = 0.25 + (data["debye_nm"] * 0.08)
-            for x, y in zip(x_p, y_p):
-                ax_sim.add_patch(
-                    plt.Circle(
-                        (x, y), debye_r, color="#3498db", alpha=0.20, zorder=2
-                    )
-                )
+                x_p = np.random.normal(5, 0.3, n_p)
+                y_p = np.random.normal(5, 0.3, n_p)
+                color_p = "#e74c3c"
+                tit = exp["estado"]
 
             ax_sim.scatter(
-                x_p, y_p, color=c_p, s=110, edgecolors="black", zorder=3
+                x_p, y_p, color=color_p, s=120, edgecolors="black", zorder=3
             )
             ax_sim.set_xlim(0, 10)
             ax_sim.set_ylim(0, 10)
             ax_sim.set_xticks([])
             ax_sim.set_yticks([])
-            ax_sim.set_title(estado_vis, fontsize=10)
+            ax_sim.set_title(tit, fontsize=10)
             st.pyplot(fig_sim)
 
-            if st.button("🔊 Aplicar Ultrasonido (Prueba de Reversibilidad)"):
-                st.session_state.ultrasonido_aplicado = True
-                if exp["indice"] < 25:
+            if st.button("🔊 Prueba de Ultrasonido"):
+                st.session_state.ultrasonido = True
+                if d["barrera"] < 2 and d["min_secundario"] >= 0:
                     st.error(
-                        "❌ La agregación en el Mínimo Primario es IRREVERSIBLE. El ultrasonido no logra dispersar las partículas."
+                        "❌ Agregación IRREVERSIBLE en pozo primario. La agitación mecánica no redispersa."
                     )
                 else:
                     st.success(
-                        "✅ La floculación en el Mínimo Secundario es REVERSIBLE. Las partículas se han redispersado temporalmente."
+                        "✅ Agregación REVERSIBLE. La energía acústica redispersa el coloide."
                     )
 
-with tab_bitacora:
-    st.subheader("Interpretación Experimental y Registro en Bitácora")
-
-    if st.session_state.ultimo_exp is None:
-        st.warning(
-            "Debes ejecutar un experimento primero para habilitar esta sección."
-        )
-    else:
-        with st.form(f"form_ronda_{st.session_state.ronda}"):
-            p1 = st.radio(
-                "1. Diagnóstico de la Suspensión:",
-                ["Estable", "Baja Estabilidad / Floculada", "Inestable / Coagulada"],
-            )
-            p2 = st.radio(
-                "2. Estado del balance de fuerzas:",
-                [
-                    "La repulsión domina debido a una barrera DLVO alta",
-                    "La atracción de van der Waals domina (barrera nula)",
-                    "El impedimento estérico compensa la falta de carga",
-                ],
-            )
-            p3 = st.text_area(
-                "3. Hipótesis del Experimento (Justificación de cambios para la siguiente ronda):"
-            )
-
-            btn_guardar = st.form_submit_button("💾 Guardar en Bitácora")
-
-            if btn_guardar:
-                reg = {
-                    "Ronda": st.session_state.ronda,
-                    "Material": exp["material"],
-                    "Zeta (mV)": round(exp["dlvo"]["zeta_efectivo"], 1),
-                    "Electrolito (mM)": elec_sel,
-                    "Barrera (kBT)": round(exp["dlvo"]["barrera"], 1),
-                    "Estado Coloidal": exp["estado"],
-                    "Índice Estabilidad": round(exp["indice"], 1),
-                    "Hipótesis del Estudiante": p3
-                    if p3
-                    else "Sin justificación",
-                }
-                st.session_state.bitacora.append(reg)
-                st.session_state.puntaje_acumulado += 15
-
-                if st.session_state.ronda < 6:
-                    st.session_state.ronda += 1
-                    st.success(
-                        "¡Experimento e hipótesis registrados en la bitácora!"
-                    )
-                else:
-                    st.balloons()
-                    st.success(
-                        "¡Has completado las 6 rondas del laboratorio virtual!"
-                    )
-
-    st.markdown("---")
-    st.subheader("📖 BITÁCORA DEL LABORATORIO")
-
-    if len(st.session_state.bitacora) > 0:
-        df_bitacora = pd.DataFrame(st.session_state.bitacora)
-        st.dataframe(df_bitacora, use_container_width=True)
-
-        col_exp1, col_exp2 = st.columns(2)
-
-        csv_buffer = df_bitacora.to_csv(index=False).encode("utf-8")
-        col_exp1.download_button(
-            label="📥 Descargar Bitácora (.CSV)",
-            data=csv_buffer,
-            file_name="bitacora_laboratorio_dlvo.csv",
-            mime="text/csv",
-        )
-
-        reporte_txt = f"# REPORTE DE LABORATORIO VIRTUAL DLVO\n\n"
-        reporte_txt += f"Puntuación de Razonamiento Científico: {min(100, st.session_state.puntaje_acumulado)} / 100 pts\n"
-        reporte_txt += f"Total de Rondas Ejecutadas: {len(st.session_state.bitacora)}\n\n"
-        reporte_txt += "## RESUMEN DE RONDAS EXPERIMENTALES\n"
-        for idx, row in df_bitacora.iterrows():
-            reporte_txt += f"### Ronda {row['Ronda']} - {row['Material']}\n"
-            reporte_txt += f"- Potencial Zeta: {row['Zeta (mV)']} mV | Electrolito: {row['Electrolito (mM)']} mM\n"
-            reporte_txt += f"- Barrera DLVO: {row['Barrera (kBT)']} kBT | Índice: {row['Índice Estabilidad']}/100\n"
-            reporte_txt += f"- Hipótesis: {row['Hipótesis del Estudiante']}\n\n"
-
-        col_exp2.download_button(
-            label="📄 Descargar Informe Académico (.TXT)",
-            data=reporte_txt,
-            file_name="informe_laboratorio_dlvo.txt",
-            mime="text/plain",
-        )
-    else:
-        st.info("La bitácora está vacía. Ejecuta e interpreta experimentos.")
-
-with tab_eval:
-    st.subheader("🎯 Desafío Final: Ordenamiento y Justificación DLVO")
-    st.markdown(
-        """
-    Evalúa las tres suspensiones coloidales planteadas:
-    * **Suspensión A:** Potencial zeta bajo ($-8\\text{ mV}$) y alta fuerza iónica ($80\\text{ mM}$).
-    * **Suspensión B:** Elevado potencial zeta ($-50\\text{ mV}$) y baja fuerza iónica ($1\\text{ mM}$).
-    * **Suspensión C:** Potencial zeta moderado ($-15\\text{ mV}$) con estabilización estérica (polímero).
-    """
+with tab_sens:
+    st.subheader("🗺️ Mapa de Sensibilidad 2D: Zona de Estabilidad Coloidal")
+    st.write(
+        "Este mapa evalúa la barrera energética ($k_BT$) al variar simultáneamente el **Potencial Zeta** y la **Concentración de Electrolito**."
     )
 
-    with st.form("form_desafio_final"):
-        orden_alumno = st.multiselect(
-            "Ordena las suspensiones de MENOR a MAYOR tendencia a la agregación (la más estable al final):",
-            ["Suspensión A", "Suspensión B", "Suspensión C"],
-            default=["Suspensión A", "Suspensión C", "Suspensión B"],
-        )
-        justificacion_txt = st.text_area(
-            "Justificación Científica (Integra compresión de la doble capa, barrera energética e impedimento estérico):"
-        )
-
-        btn_evaluar = st.form_submit_button("🏆 Enviar Evaluación Final")
-
-        if btn_evaluar:
-            puntaje_final = min(100, st.session_state.puntaje_acumulado + 25)
-            st.markdown(f"## Puntuación Final: **{puntaje_final} / 100 pts**")
-            st.info(
-                """
-            **Análisis Físico:**
-            * **Suspensión A (Menor Estabilidad):** La alta fuerza iónica comprime la doble capa eléctrica, anulando la repulsión electrostática.
-            * **Suspensión B (Alta Estabilidad Electrostática):** La doble capa se expande y el alto potencial zeta genera una gran barrera repulsiva DLVO.
-            * **Suspensión C (Alta Estabilidad Estérica):** Las cadenas poliméricas crean un impedimento físico que previene la coagulación independientemente de la carga superficial.
-            """
+    if st.button("📊 Generar Mapa 2D de Estabilidad"):
+        with st.spinner("Calculando superficie de energía DLVO..."):
+            zetas_m, elecs_m, Z_map = generar_matriz_sensibilidad(
+                material_sel, ph_sel, mecanismo_sel
             )
 
+            fig_map, ax_map = plt.subplots(figsize=(7, 4.5))
+            c = ax_map.contourf(
+                zetas_m, elecs_m, Z_map, levels=15, cmap="YlGnBu"
+            )
+            fig_map.colorbar(c, label="Barrera DLVO (kBT)")
+            ax_map.axvline(
+                zeta_sel,
+                color="red",
+                linestyle="--",
+                label=f"Zeta Actual ({zeta_sel} mV)",
+            )
+            ax_map.axhline(
+                elec_sel,
+                color="orange",
+                linestyle="--",
+                label=f"Electrolito Actual ({elec_sel} mM)",
+            )
+            ax_map.set_xlabel("Potencial Zeta (mV)")
+            ax_map.set_ylabel("Concentración NaCl (mM)")
+            ax_map.legend(fontsize=8, loc="upper right")
+            st.pyplot(fig_map)
+
+with tab_bitacora:
+    st.subheader("Registro Experimental")
+
+    if st.session_state.ultimo_exp is None:
+        st.warning("Ejecuta una simulación primero.")
+    else:
+        with st.form(f"form_ronda_{st.session_state.ronda}"):
+            p_hip = st.text_area(
+                "Conclusión e Hipótesis para el siguiente paso:"
+            )
+            btn_guardar = st.form_submit_button("💾 Registrar en Bitácora")
+
+            if btn_guardar:
+                st.session_state.bitacora.append(
+                    {
+                        "Ronda": st.session_state.ronda,
+                        "Material": material_sel,
+                        "Zeta (mV)": round(
+                            st.session_state.ultimo_exp["dlvo"][
+                                "zeta_efectivo"
+                            ],
+                            1,
+                        ),
+                        "Electrolito (mM)": elec_sel,
+                        "Barrera (kBT)": round(
+                            st.session_state.ultimo_exp["dlvo"]["barrera"], 1
+                        ),
+                        "Log10 W (Fuchs)": round(
+                            np.log10(
+                                max(
+                                    st.session_state.ultimo_exp["dlvo"][
+                                        "fuchs_w"
+                                    ],
+                                    1.0,
+                                )
+                            ),
+                            2,
+                        ),
+                        "Estado": st.session_state.ultimo_exp["estado"],
+                        "Hipótesis": p_hip if p_hip else "Sin registro",
+                    }
+                )
+                st.session_state.puntaje_acumulado += 15
+                if st.session_state.ronda < 6:
+                    st.session_state.ronda += 1
+                    st.success("¡Registrado con éxito!")
+
+    if len(st.session_state.bitacora) > 0:
+        df_bit = pd.DataFrame(st.session_state.bitacora)
+        st.dataframe(df_bit, use_container_width=True)
+
+        csv_data = df_bit.to_csv(index=False).encode("utf-8")
+        st.download_button(
+            "📥 Descargar Bitácora (.CSV)",
+            csv_data,
+            "bitacora_dlvo_fuchs.csv",
+            "text/csv",
+        )
+
 with tab_guia:
-    st.subheader("📚 Fundamentos Teóricos de la Teoría DLVO")
+    st.subheader("📚 Fundamentos Teóricos: Factor de Fuchs")
     st.markdown(
         """
-    La teoría **DLVO** explica la estabilidad coloidal mediante el balance entre fuerzas de atracción de van der Waals ($V_{\\text{vdW}}$) y repulsión electrostática de doble capa ($V_{\\text{elec}}$):
+    La relación entre la cinética de coagulación y el potencial de interacción se describe mediante el **Factor de Estabilidad de Fuchs ($W$)**:
     
-    $$V_{\\text{total}}(d) = V_{\\text{vdW}}(d) + V_{\\text{elec}}(d) + V_{\\text{estérica}}(d)$$
+    $$W = 2a \\int_{2a}^{\\infty} \\frac{\\exp\\left(\\frac{V_{\\text{total}}(r)}{k_B T}\\right)}{r^2} dr$$
     
-    ### Mecanismos Clave:
-    1. **Mínimo Primario:** Atrapamiento irreversible a distancias muy cortas.
-    2. **Mínimo Secundario:** Agregación débil y reversible que permite la floculación/redispersión.
-    3. **Compresión de la Doble Capa:** Un aumento en los iones del medio (fuerza iónica) reduce el alcance de la repulsión electrostática.
+    * **Si $W \\approx 1$ ($|\\log W| \\to 0$):** Coagulación rápida controlada por difusión (sin barrera repulsiva).
+    * **Si $W \\gg 10^5$ ($\\log W > 5$):** Suspensión altamente estable a largo plazo.
     """
     )
